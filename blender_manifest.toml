@@ -1,8 +1,8 @@
 schema_version = "1.0.0"
 
-id = "SuperDuperBatchExporter"
-version = "2.8.2"
-name = "Super Duper Batch Exporter"
+id = "super_duper_batch_exporter_local"
+version = "2.8.5"
+name = "Super Duper Batch Exporter (Local)"
 tagline = "One click export to multiple files"
 maintainer = "Bastian L Strube <mail@bastianlstrube.dk>"
 type = "add-on"
@@ -50,11 +50,17 @@ files = "Export files to disk & create subdirectories in output directory"
 
 # # Optional: advanced build settings.
 # # https://docs.blender.org/manual/en/dev/advanced/extensions/command_line_arguments.html#command-line-args-extension-build
-# [build]
+[build]
 # # These are the default build excluded patterns.
 # # You only need to edit them if you want different options.
-# paths_exclude_pattern = [
-#   "__pycache__/",
-#   "/.git/",
-#   "/*.zip",
-# ]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/.kilo/",
+  "/dist/",
+  "/*.blend",
+  "/*Screenshot*.png",
+  "/SuperDuperBatchExporter_*.png",
+  "/*.zip",
+  "/blender_manifest1.toml",
+]

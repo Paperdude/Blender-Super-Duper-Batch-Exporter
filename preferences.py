@@ -1,23 +1,17 @@
-import bpy
 from bpy.types import AddonPreferences
 from bpy.props import EnumProperty, BoolProperty, StringProperty
-from . import panels
 
 # Addon settings that are NOT specific to a .blend file
 class BatchExportPreferences(AddonPreferences):
     bl_idname = __package__
 
     def addon_location_updated(self, context):
-        bpy.types.TOPBAR_MT_editor_menus.remove(panels.draw_popover)
-        bpy.types.VIEW3D_MT_editor_menus.remove(panels.draw_popover)
-        if hasattr(bpy.types, "VIEW3D_PT_batch_export"):
-            bpy.utils.unregister_class(panels.VIEW3D_PT_batch_export)
-        if self.addon_location == 'TOPBAR':
-            bpy.types.TOPBAR_MT_editor_menus.append(panels.draw_popover)
-        elif self.addon_location == '3DHEADER':
-            bpy.types.VIEW3D_MT_editor_menus.append(panels.draw_popover)
-        elif self.addon_location == '3DSIDE':
-            bpy.utils.register_class(panels.VIEW3D_PT_batch_export)
+        # Both menu callbacks and the side-panel class stay registered. Their
+        # poll/draw functions decide which location is currently visible.
+        # Dynamically unregistering them made the second preference change and
+        # add-on shutdown fail when a callback was already absent.
+        if context and context.area:
+            context.area.tag_redraw()
 
     addon_location: EnumProperty(
         name="Addon Location",
@@ -41,7 +35,6 @@ class BatchExportPreferences(AddonPreferences):
         name="Copy on Export",
         description="Make a copy of exported files in a secondary directory",
         default=False,
-        update=addon_location_updated,
     )
     def draw(self, context):
         self.layout.prop(self, "addon_location")

@@ -89,6 +89,8 @@ def draw_settings(self, context):
     elif settings.file_format == 'FBX':
         col.prop(settings, 'fbx_preset_enum')
         self.layout.prop(settings, 'apply_mods')
+        animation_col = self.layout.column(align=True, heading="Animation Export:")
+        animation_col.prop(settings, 'prepare_animation')
     elif settings.file_format == 'glTF':
         col.prop(settings, 'gltf_preset_enum')
         self.layout.prop(settings, 'apply_mods')

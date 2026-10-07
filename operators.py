@@ -701,24 +701,120 @@ class EXPORT_MESH_OT_batch(Operator):
 
         return baked_mesh
 
+    def _apply_fbx_mesh_modifiers(self, context, obj):
+        """Apply exportable modifiers while preserving FBX skin binding.
+
+        Applying an Armature modifier turns the current deformation into static
+        vertices and removes the mesh-to-armature relationship FBX needs.  The
+        temporary object instead follows the same operator path as a manual
+        Modifier > Apply for every modifier before the first Armature modifier.
+        """
+        modifiers = list(obj.modifiers)
+        armature_seen = False
+
+        for modifier in modifiers:
+            if modifier.type == 'ARMATURE':
+                armature_seen = True
+                continue
+
+            if armature_seen:
+                raise RuntimeError(
+                    f"'{obj.name}' has modifier '{modifier.name}' after its "
+                    "Armature modifier. Move the Armature modifier to the end "
+                    "of the stack for animated FBX export."
+                )
+
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            result = bpy.ops.object.modifier_apply(modifier=modifier.name)
+            if 'FINISHED' not in result:
+                raise RuntimeError(
+                    f"Could not apply modifier '{modifier.name}' on '{obj.name}'"
+                )
+
+    def _with_fbx_armature_dependencies(self, settings, objects):
+        """Include armatures referenced by exported mesh modifiers."""
+        result = list(objects)
+        if settings.file_format != 'FBX':
+            return result
+
+        seen = set(result)
+        for obj in list(result):
+            if obj.type != 'MESH':
+                continue
+            for modifier in obj.modifiers:
+                if (
+                    modifier.type == 'ARMATURE'
+                    and modifier.object is not None
+                    and modifier.object not in seen
+                ):
+                    seen.add(modifier.object)
+                    result.append(modifier.object)
+        return result
+
+    @contextmanager
+    def _temporary_default_pose(self, context, settings, objects):
+        """Use rest pose only while preparing procedural mesh data.
+
+        The pose is restored before the FBX operator runs, so actions and NLA
+        tracks still evaluate normally during animation baking.
+        """
+        if settings.file_format != 'FBX' or not settings.prepare_animation:
+            yield
+            return
+
+        armature_data = {}
+        for obj in objects:
+            if obj.type == 'ARMATURE' and obj.data not in armature_data:
+                armature_data[obj.data] = obj.data.pose_position
+
+        try:
+            for data in armature_data:
+                data.pose_position = 'REST'
+            context.view_layer.update()
+            yield
+        finally:
+            for data, pose_position in armature_data.items():
+                data.pose_position = pose_position
+            context.view_layer.update()
+
+    @contextmanager
+    def _temporary_animation_start_frame(self, context, settings):
+        """Prepare from the scene start frame and restore the viewport."""
+        if settings.file_format != 'FBX':
+            yield
+            return
+
+        scene = context.scene
+        original_frame = scene.frame_current
+        original_subframe = scene.frame_subframe
+        try:
+            if settings.prepare_animation:
+                scene.frame_set(scene.frame_start)
+            yield
+        finally:
+            scene.frame_set(original_frame, subframe=original_subframe)
+
     @contextmanager
     def _baked_export_copies(self, context, settings, objects):
-        """Bake modifiers before applying temporary export transforms.
+        """Create a non-destructive export snapshot for FBX meshes.
 
-        Exporters normally evaluate modifiers after reading object transforms.
-        A temporary evaluated copy reverses that order without touching the
-        source object: modifiers -> export transform -> exporter.
+        Geometry Nodes and other pre-Armature modifiers are applied to a
+        temporary copy. Armature modifiers remain live so FBX can export skin
+        weights and animation, while the source scene stays editable.
         """
-        needs_late_transform = (
-            settings.apply_mods
-            and (settings.set_location or settings.set_rotation or settings.set_scale)
+        needs_export_snapshot = (
+            settings.file_format == 'FBX'
+            and settings.apply_mods
+            and any(obj.type == 'MESH' for obj in objects)
         )
-        if not needs_late_transform:
+        if not needs_export_snapshot:
             yield objects
             return
 
         temporary_objects = []
-        baked_meshes = []
+        temporary_meshes = set()
         renamed_sources = []
         object_map = {}
 
@@ -733,10 +829,12 @@ class EXPORT_MESH_OT_batch(Operator):
                 renamed_sources.append((source, source_name))
 
                 export_copy = source.copy()
+                export_copy.data = source.data.copy()
                 export_copy.name = source_name
                 collection = source.users_collection[0] if source.users_collection else context.scene.collection
                 collection.objects.link(export_copy)
                 temporary_objects.append(export_copy)
+                temporary_meshes.add(export_copy.data)
                 object_map[source] = export_copy
 
             # Preserve hierarchies when both parent and child are part of a job.
@@ -745,18 +843,22 @@ class EXPORT_MESH_OT_batch(Operator):
                     continue
                 export_object.parent = object_map.get(source.parent, source.parent)
 
-            # All copies still have their original transforms here, so modifiers
-            # that depend on world/object coordinates evaluate correctly.
-            for export_object in temporary_objects:
-                baked_meshes.append(self._bake_mesh_object(context, export_object))
+            # Use Blender's modifier-apply operator on the disposable copy.
+            # This matches the manual workflow that preserves generated vertex
+            # groups, while deliberately leaving Armature modifiers untouched.
+            with self._temporary_default_pose(context, settings, objects):
+                for export_object in temporary_objects:
+                    self._apply_fbx_mesh_modifiers(context, export_object)
 
             yield [object_map[obj] for obj in objects]
 
         finally:
             for export_object in temporary_objects:
                 if export_object and export_object.name in bpy.data.objects:
+                    if export_object.type == 'MESH':
+                        temporary_meshes.add(export_object.data)
                     bpy.data.objects.remove(export_object, do_unlink=True)
-            for mesh in baked_meshes:
+            for mesh in temporary_meshes:
                 if mesh and mesh.name in bpy.data.meshes and mesh.users == 0:
                     bpy.data.meshes.remove(mesh)
             for source, source_name in renamed_sources:
@@ -773,7 +875,10 @@ class EXPORT_MESH_OT_batch(Operator):
         unchanged while merely declaring the target axes.
         """
         if settings.file_format != 'FBX' or any(
-            obj.type not in {'MESH', 'EMPTY'} for obj in objects
+            obj.type not in {'MESH', 'EMPTY'}
+            or obj.animation_data is not None
+            or bool(obj.constraints)
+            for obj in objects
         ):
             yield objects, False
             return
@@ -1146,10 +1251,15 @@ class EXPORT_MESH_OT_batch(Operator):
                 yield self._create_job(settings, coll.name, coll_objects, base_dir)
         
         elif mode == 'SCENE':
-            filename = settings.prefix + settings.suffix
-            # If no prefix/suffix, fallback to blend file name
-            if not filename:
-                filename = Path(bpy.data.filepath).stem if bpy.data.is_saved else "Untitled"
+            # Prefix and suffix are added later by the common filename builder.
+            # With either set, an empty item name produces exactly prefix+suffix.
+            filename = ""
+            if not settings.prefix and not settings.suffix:
+                filename = (
+                    Path(bpy.data.filepath).stem
+                    if bpy.data.is_saved
+                    else "Untitled"
+                )
             yield self._create_job(settings, filename, objects, base_dir)
 
     def _create_job(self, settings, name, objects, base_dir, source_obj=None):
@@ -1226,11 +1336,20 @@ class EXPORT_MESH_OT_batch(Operator):
 
     def _export_standard_job(self, context, settings, job):
         """Export the regular, non-LOD representation of an export job."""
-        with self._baked_export_copies(context, settings, job['objects']) as objects_to_export:
-            # Modifier evaluation above is complete; transforms are deliberately
-            # the last geometry-affecting step.
-            with self._temporary_transform(settings, objects_to_export):
-                self._select_and_export(settings, job, objects_to_export)
+        source_objects = self._with_fbx_armature_dependencies(
+            settings, job['objects']
+        )
+        with self.temporary_visibility(source_objects):
+            with self._temporary_animation_start_frame(context, settings):
+                with self._baked_export_copies(
+                    context, settings, source_objects
+                ) as objects_to_export:
+                    # Modifier evaluation above is complete; transforms are
+                    # deliberately the last geometry-affecting step.
+                    with self._temporary_transform(settings, objects_to_export):
+                        self._select_and_export(
+                            settings, job, objects_to_export
+                        )
 
     def _select_and_export(
         self,
@@ -1409,7 +1528,10 @@ class EXPORT_MESH_OT_batch(Operator):
             "object_types": {
                 'EMPTY', 'MESH', 'OTHER', 'ARMATURE', 'CAMERA', 'LIGHT'
             },
-            "use_mesh_modifiers": settings.apply_mods,
+            # FBX modifiers are prepared explicitly on disposable objects.
+            # Keeping this disabled prevents the exporter from baking the
+            # remaining Armature modifier into the current pose.
+            "use_mesh_modifiers": False,
             # ✅ метрична система без масштабування
             "global_scale": 1.0,
             "apply_unit_scale": False,
@@ -1421,6 +1543,7 @@ class EXPORT_MESH_OT_batch(Operator):
             "axis_forward": '-Z',
             "axis_up": 'Y',
             "use_space_transform": not axes_preconverted,
+            "bake_anim": True,
             "bake_space_transform": not axes_preconverted,
         })
 

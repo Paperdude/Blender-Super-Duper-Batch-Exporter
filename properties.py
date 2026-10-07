@@ -208,6 +208,14 @@ class BatchExportSettings(PropertyGroup):
         description="Should the modifiers by applied onto the exported mesh?\nCan't export Shape Keys with this on",
         default=True,
     )
+    prepare_animation: BoolProperty(
+        name="Use Default Pose",
+        description=(
+            "Prepare Geometry Nodes from the armature rest pose and the scene start frame "
+            "instead of using the frame currently shown in the viewport"
+        ),
+        default=True,
+    )
     frame_start: IntProperty(
         name="Frame Start",
         min=0,
