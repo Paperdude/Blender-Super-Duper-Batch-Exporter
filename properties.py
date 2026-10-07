@@ -127,6 +127,14 @@ class BatchExportSettings(PropertyGroup):
         name="Full Hierarchy",
         description="Create Sub-Directories for the Collection and Parent Collections,\nrecreating the hierarchy"
     )
+    export_scene_collection: BoolProperty(
+        name="Export Scene Collection",
+        description=(
+            "Export objects linked directly to Blender's root Scene Collection "
+            "as a separate file"
+        ),
+        default=False,
+    )
 
 
     # Format specific options:
@@ -215,6 +223,91 @@ class BatchExportSettings(PropertyGroup):
             "instead of using the frame currently shown in the viewport"
         ),
         default=True,
+    )
+    animation_source: EnumProperty(
+        name="Animation Source",
+        description="How Blender creates FBX animation clips",
+        items=[
+            (
+                'ALL_ACTIONS',
+                "All Actions",
+                "Export every Action compatible with the exported armature",
+                1,
+            ),
+            (
+                'NLA_STRIPS',
+                "NLA Strips",
+                "Export each non-muted NLA strip as an animation clip",
+                2,
+            ),
+        ],
+        default='ALL_ACTIONS',
+    )
+    animation_sampling_step: FloatProperty(
+        name="Sampling Step",
+        description="Evaluate animation every N frames; use 1 for reliable IK baking",
+        default=1.0,
+        min=0.01,
+        soft_max=10.0,
+    )
+    animation_simplify: FloatProperty(
+        name="Simplify",
+        description="Remove redundant baked keys; use 0 to prevent IK and constraint drift",
+        default=0.0,
+        min=0.0,
+        soft_max=10.0,
+    )
+    animation_key_all_bones: BoolProperty(
+        name="Key All Exported Bones",
+        description="Ensure every exported bone receives animation keys",
+        default=True,
+    )
+    animation_force_start_end: BoolProperty(
+        name="Force Start/End Keys",
+        description="Always write keys at the first and last frame of every clip",
+        default=True,
+    )
+    animation_stabilize_ik_poles: BoolProperty(
+        name="Stabilize IK Pole Targets",
+        description=(
+            "Temporarily remove rotational constraints on IK pole controls when "
+            "they point back into the same IK chain. Such dependency cycles make "
+            "baked FBX poses depend on the previously evaluated animation"
+        ),
+        default=True,
+    )
+    bone_export_mode: EnumProperty(
+        name="Bones",
+        description="Choose which armature bones are written to FBX",
+        items=[
+            (
+                'ALL',
+                "All Bones",
+                "Export deform bones, control bones and helper bones",
+                1,
+            ),
+            (
+                'DEFORM_ONLY',
+                "Deform Only",
+                "Export deform bones and the non-deform ancestors required to preserve their hierarchy",
+                2,
+            ),
+            (
+                'DEFORM_AND_SOCKETS',
+                "Deform + Sockets",
+                "Export deform bones, required ancestors, and socket bones selected by prefix or custom property",
+                3,
+            ),
+        ],
+        default='DEFORM_AND_SOCKETS',
+    )
+    socket_bone_prefix: StringProperty(
+        name="Socket Prefix",
+        description=(
+            "Case-insensitive prefix for socket bones. A bone with custom property "
+            "'export_socket' enabled is also preserved"
+        ),
+        default="SOCKET_",
     )
     frame_start: IntProperty(
         name="Frame Start",

@@ -797,6 +797,255 @@ class EXPORT_MESH_OT_batch(Operator):
             scene.frame_set(original_frame, subframe=original_subframe)
 
     @contextmanager
+    def _temporary_socket_deform_flags(self, settings, objects):
+        """Keep socket bones when FBX's deform-only filtering is enabled."""
+        if settings.bone_export_mode != 'DEFORM_AND_SOCKETS':
+            yield
+            return
+
+        prefix = settings.socket_bone_prefix.strip().casefold()
+        changed_bones = {}
+
+        try:
+            for obj in objects:
+                if obj.type != 'ARMATURE':
+                    continue
+                for bone in obj.data.bones:
+                    is_socket = bool(bone.get('export_socket', False))
+                    if prefix and bone.name.casefold().startswith(prefix):
+                        is_socket = True
+                    if is_socket and not bone.use_deform:
+                        changed_bones[bone] = bone.use_deform
+                        bone.use_deform = True
+            yield
+        finally:
+            for bone, use_deform in changed_bones.items():
+                bone.use_deform = use_deform
+
+    @contextmanager
+    def _temporary_stable_ik_poles(self, context, settings, objects):
+        """Break invalid pole-target dependency cycles while baking FBX.
+
+        A pole control's rotation is irrelevant to Blender's IK solver. If a
+        rotational constraint on that control targets a bone in the IK chain,
+        however, the graph becomes circular: the chain needs the pole and the
+        pole needs the chain. Its result can then depend on which Action Blender
+        evaluated immediately beforehand. A muted constraint still remains in
+        Blender's dependency graph, so the offending rotational constraints
+        must be removed for the bake and recreated afterward. The pole position
+        itself is never changed.
+        """
+        if (
+            settings.file_format != 'FBX'
+            or not settings.animation_stabilize_ik_poles
+        ):
+            yield
+            return
+
+        rotational_constraint_types = {
+            'COPY_ROTATION',
+            'DAMPED_TRACK',
+            'LOCKED_TRACK',
+            'TRACK_TO',
+        }
+        removed_constraints = []
+        removed_pointers = set()
+
+        def constraint_state(constraint):
+            properties = {}
+            for prop in constraint.bl_rna.properties:
+                identifier = prop.identifier
+                if identifier in {'rna_type', 'type'} or prop.is_readonly:
+                    continue
+                try:
+                    value = getattr(constraint, identifier)
+                    if prop.type == 'COLLECTION':
+                        continue
+                    if prop.is_array:
+                        value = tuple(value)
+                    properties[identifier] = value
+                except (AttributeError, TypeError, ValueError):
+                    continue
+            try:
+                custom_properties = {
+                    key: constraint[key] for key in constraint.keys()
+                }
+            except TypeError:
+                custom_properties = {}
+            return properties, custom_properties
+
+        try:
+            for obj in objects:
+                if obj.type != 'ARMATURE':
+                    continue
+
+                for chain_tip in obj.pose.bones:
+                    for ik_constraint in chain_tip.constraints:
+                        if (
+                            ik_constraint.type != 'IK'
+                            or ik_constraint.mute
+                            or ik_constraint.pole_target != obj
+                            or not ik_constraint.pole_subtarget
+                        ):
+                            continue
+
+                        chain_bones = set()
+                        chain_bone = chain_tip
+                        chain_count = ik_constraint.chain_count
+                        while chain_bone is not None:
+                            chain_bones.add(chain_bone.name)
+                            if chain_count and len(chain_bones) >= chain_count:
+                                break
+                            chain_bone = chain_bone.parent
+
+                        pole_bone = obj.pose.bones.get(
+                            ik_constraint.pole_subtarget
+                        )
+                        if pole_bone is None:
+                            continue
+
+                        for index, pole_constraint in enumerate(
+                            list(pole_bone.constraints)
+                        ):
+                            if (
+                                pole_constraint.type in rotational_constraint_types
+                                and not pole_constraint.mute
+                                and getattr(pole_constraint, 'target', None) == obj
+                                and getattr(pole_constraint, 'subtarget', '')
+                                in chain_bones
+                            ):
+                                pointer = pole_constraint.as_pointer()
+                                if pointer in removed_pointers:
+                                    continue
+                                removed_pointers.add(pointer)
+                                properties, custom_properties = constraint_state(
+                                    pole_constraint
+                                )
+                                removed_constraints.append(
+                                    (
+                                        pole_bone,
+                                        pole_constraint.type,
+                                        index,
+                                        properties,
+                                        custom_properties,
+                                    )
+                                )
+                                print(
+                                    "SDBE: Stabilizing IK pole "
+                                    f"'{pole_bone.name}': temporarily removed "
+                                    f"'{pole_constraint.name}' targeting "
+                                    f"'{pole_constraint.subtarget}'"
+                                )
+                                pole_bone.constraints.remove(pole_constraint)
+
+            if removed_constraints:
+                context.view_layer.update()
+            yield
+        finally:
+            for (
+                pole_bone,
+                constraint_type,
+                original_index,
+                properties,
+                custom_properties,
+            ) in removed_constraints:
+                constraint = pole_bone.constraints.new(constraint_type)
+                for identifier, value in properties.items():
+                    try:
+                        setattr(constraint, identifier, value)
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+                for key, value in custom_properties.items():
+                    constraint[key] = value
+                current_index = len(pole_bone.constraints) - 1
+                if original_index < current_index:
+                    pole_bone.constraints.move(current_index, original_index)
+            if removed_constraints:
+                context.view_layer.update()
+
+    @contextmanager
+    def _isolated_all_actions_state(self, context, settings, objects):
+        """Bake every Action from a deterministic, uncontaminated rig state.
+
+        Blender keeps the evaluated values of unkeyed pose channels and custom
+        properties after switching Actions. The FBX exporter then uses that
+        state as the base for every Action, allowing the currently previewed
+        clip to leak into other clips. Clear that base temporarily and restore
+        it exactly after export.
+        """
+        if settings.animation_source != 'ALL_ACTIONS':
+            yield
+            return
+
+        from mathutils import Matrix
+
+        animation_states = []
+        nla_states = []
+        pose_states = []
+        property_states = []
+
+        def reset_custom_property_defaults(owner):
+            for key in owner.keys():
+                try:
+                    ui_data = owner.id_properties_ui(key).as_dict()
+                except (KeyError, TypeError):
+                    continue
+                if 'default' not in ui_data:
+                    continue
+                value = owner[key]
+                default = ui_data['default']
+                if value == default:
+                    continue
+                property_states.append((owner, key, value))
+                owner[key] = default
+
+        try:
+            for obj in objects:
+                animation_data = obj.animation_data
+                if animation_data is not None:
+                    action = animation_data.action
+                    action_slot = (
+                        animation_data.action_slot if action is not None else None
+                    )
+                    use_tweak_mode = animation_data.use_tweak_mode
+                    animation_states.append(
+                        (animation_data, action, action_slot, use_tweak_mode)
+                    )
+
+                    if animation_data.is_property_readonly('action'):
+                        animation_data.use_tweak_mode = False
+                    animation_data.action = None
+
+                    for track in animation_data.nla_tracks:
+                        nla_states.append((track, track.mute))
+                        track.mute = True
+
+                if obj.type != 'ARMATURE':
+                    continue
+
+                reset_custom_property_defaults(obj)
+                for pose_bone in obj.pose.bones:
+                    pose_states.append((pose_bone, pose_bone.matrix_basis.copy()))
+                    pose_bone.matrix_basis = Matrix.Identity(4)
+                    reset_custom_property_defaults(pose_bone)
+
+            context.view_layer.update()
+            yield
+        finally:
+            for owner, key, value in reversed(property_states):
+                owner[key] = value
+            for pose_bone, matrix_basis in pose_states:
+                pose_bone.matrix_basis = matrix_basis
+            for track, mute in nla_states:
+                track.mute = mute
+            for animation_data, action, action_slot, use_tweak_mode in animation_states:
+                animation_data.action = action
+                if action is not None and action_slot is not None:
+                    animation_data.action_slot = action_slot
+                animation_data.use_tweak_mode = use_tweak_mode
+            context.view_layer.update()
+
+    @contextmanager
     def _baked_export_copies(self, context, settings, objects):
         """Create a non-destructive export snapshot for FBX meshes.
 
@@ -1241,10 +1490,16 @@ class EXPORT_MESH_OT_batch(Operator):
         elif mode == 'COLLECTIONS':
             # Group objects by their primary collection
             collections_to_export = {}
+            scene_collection = bpy.context.scene.collection
             for obj in objects:
                 if obj.users_collection:
                     # Objects can be in multiple collections; we take the first one as primary
                     primary_coll = obj.users_collection[0]
+                    if (
+                        primary_coll == scene_collection
+                        and not settings.export_scene_collection
+                    ):
+                        continue
                     collections_to_export.setdefault(primary_coll, []).append(obj)
             
             for coll, coll_objects in collections_to_export.items():
@@ -1347,9 +1602,18 @@ class EXPORT_MESH_OT_batch(Operator):
                     # Modifier evaluation above is complete; transforms are
                     # deliberately the last geometry-affecting step.
                     with self._temporary_transform(settings, objects_to_export):
-                        self._select_and_export(
-                            settings, job, objects_to_export
-                        )
+                        with self._temporary_stable_ik_poles(
+                            context, settings, objects_to_export
+                        ):
+                            with self._isolated_all_actions_state(
+                                context, settings, objects_to_export
+                            ):
+                                with self._temporary_socket_deform_flags(
+                                    settings, objects_to_export
+                                ):
+                                    self._select_and_export(
+                                        settings, job, objects_to_export
+                                    )
 
     def _select_and_export(
         self,
@@ -1544,6 +1808,14 @@ class EXPORT_MESH_OT_batch(Operator):
             "axis_up": 'Y',
             "use_space_transform": not axes_preconverted,
             "bake_anim": True,
+            "bake_anim_use_all_bones": settings.animation_key_all_bones,
+            "bake_anim_use_nla_strips": settings.animation_source == 'NLA_STRIPS',
+            "bake_anim_use_all_actions": settings.animation_source == 'ALL_ACTIONS',
+            "bake_anim_force_startend_keying": settings.animation_force_start_end,
+            "bake_anim_step": settings.animation_sampling_step,
+            "bake_anim_simplify_factor": settings.animation_simplify,
+            "use_armature_deform_only": settings.bone_export_mode != 'ALL',
+            "add_leaf_bones": False,
             "bake_space_transform": not axes_preconverted,
         })
 

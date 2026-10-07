@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "super_duper_batch_exporter_local"
-version = "2.8.5"
+version = "2.8.10"
 name = "Super Duper Batch Exporter (Local)"
 tagline = "One click export to multiple files"
 maintainer = "Bastian L Strube <mail@bastianlstrube.dk>"
@@ -58,7 +58,9 @@ paths_exclude_pattern = [
   "/.git/",
   "/.kilo/",
   "/dist/",
+  "/_roundtrip*",
   "/*.blend",
+  "/*.fbx",
   "/*Screenshot*.png",
   "/SuperDuperBatchExporter_*.png",
   "/*.zip",

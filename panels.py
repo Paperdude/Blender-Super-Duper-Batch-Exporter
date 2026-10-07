@@ -58,6 +58,8 @@ def draw_settings(self, context):
     col.prop(settings, 'file_format')
     col.prop(settings, 'mode')
     col.prop(settings, 'limit')
+    if settings.mode == 'COLLECTIONS':
+        col.prop(settings, 'export_scene_collection')
     if 'OBJECT' in settings.mode:
         col.prop(settings, 'prefix_collection')
     if 'SUBDIR' in settings.mode:
@@ -91,6 +93,17 @@ def draw_settings(self, context):
         self.layout.prop(settings, 'apply_mods')
         animation_col = self.layout.column(align=True, heading="Animation Export:")
         animation_col.prop(settings, 'prepare_animation')
+        animation_col.prop(settings, 'animation_source')
+        animation_col.prop(settings, 'animation_sampling_step')
+        animation_col.prop(settings, 'animation_simplify')
+        animation_col.prop(settings, 'animation_key_all_bones')
+        animation_col.prop(settings, 'animation_force_start_end')
+        animation_col.prop(settings, 'animation_stabilize_ik_poles')
+
+        bones_col = self.layout.column(align=True, heading="Skeleton Export:")
+        bones_col.prop(settings, 'bone_export_mode')
+        if settings.bone_export_mode == 'DEFORM_AND_SOCKETS':
+            bones_col.prop(settings, 'socket_bone_prefix')
     elif settings.file_format == 'glTF':
         col.prop(settings, 'gltf_preset_enum')
         self.layout.prop(settings, 'apply_mods')
