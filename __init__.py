@@ -2,10 +2,17 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+def get_icon_id(icon_name):
+    """Helper function to get icon ID"""
+    if "main" in preview_collections and icon_name in preview_collections["main"]:
+        return preview_collections["main"][icon_name].icon_id
+    return 0
+
+preview_collections = {}
+
 bl_info = {
     "name": "Super Duper Batch Exporter",
     "author": "Bastian L Strube, forked from Mrtripie",
-    "version": (2, 8, 2),
     "blender": (4, 2, 0),
     "category": "Import-Export",
     "location": "Set in preferences below. Default: Top Bar (After File, Edit, ...Help)",
@@ -18,7 +25,6 @@ from bpy.props import PointerProperty
 from bpy.utils import register_class, unregister_class, previews
 import importlib
 import os
-import bpy
 
 module_names = [
     "preferences",
@@ -26,6 +32,9 @@ module_names = [
     "panels",
     "operators", 
 ]
+
+from . import properties
+from . import panels
 
 
 def register_unregister_modules(module_names: list, register: bool):
@@ -59,7 +68,7 @@ def register_unregister_modules(module_names: list, register: bool):
 
         if register and hasattr(m, 'register'):
             m.register()
-        elif not register and hasattr(m, 'unregister'):
+        elif hasattr(m, 'unregister'):
             m.unregister()
 
 # icon dict to store.... something in
@@ -69,14 +78,11 @@ def register():
     # icon registration
     global preview_collections
     pcoll = previews.new()
-    preview_collections["main"] = pcoll 
+    custom_icons = pcoll
     icons_dir = os.path.join(os.path.dirname(__file__), "icons")
-    
-    # Load both variations
-    pcoll.load("batchexport_icon_light", os.path.join(icons_dir, "SuperDuperBatchExporter_Icon.png"), 'IMAGE')
-    pcoll.load("batchexport_icon_dark", os.path.join(icons_dir, "SuperDuperBatchExporter_Icon_DarkTheme.png"), 'IMAGE')
-    #pcoll.load("batchexport_icon", os.path.join(icons_dir, "SuperDuperBatchExporter_Icon.png"), 'IMAGE')
-    
+    pcoll.load("batchexport_icon", os.path.join(icons_dir, "SuperDuperBatchExporter_Icon.png"), 'IMAGE')
+    preview_collections["main"] = pcoll
+
     register_unregister_modules(module_names, True)
 
     # Add batch export settings to Scene type
@@ -93,6 +99,7 @@ def unregister():
     for pcoll in preview_collections.values():
         previews.remove(pcoll)
     preview_collections.clear()
+    custom_icons = None # Good practice to clear the global reference
 
     register_unregister_modules(reversed(module_names), False)
 
@@ -100,31 +107,11 @@ def unregister():
     TOPBAR_MT_editor_menus.remove(panels.draw_popover)
     VIEW3D_MT_editor_menus.remove(panels.draw_popover)
 
-    # Note: Scene.batch_export is intentionally NOT deleted on unregister.
-    # Removing it would break access to the user's per-scene settings stored
-    # in the .blend file if the addon is re-enabled in the same session.
-
-def is_dark_theme():
-    """Calculates the luminance of the UI to determine if the theme is dark."""
-    theme = bpy.context.preferences.themes[0]
-
-    # Sample "Themes > User Interface > Tool > Inner"
-    bg_color = theme.user_interface.wcol_tool.inner
-    
-    luminance = (0.299 * bg_color[0]) + (0.587 * bg_color[1]) + (0.114 * bg_color[2])
-    return luminance < 0.35
+    # Remove properties
+    #del bpy.types.Scene.batch_export  # THIS SHOULD BE ADDED AS A BUTTON IN THE PREFERENCES INSTEAD
 
 def get_icon_id(icon_name):
-    """Helper function to get icon ID, switching based on theme luminance"""
-    if "main" in preview_collections:
-        pcoll = preview_collections["main"]
-        
-        # Determine if we need the light or dark version
-        # Note: Your register() loads 'batchexport_icon_light' and 'batchexport_icon_dark'
-        suffix = "_dark" if is_dark_theme() else "_light"
-        theme_icon_name = f"{icon_name}{suffix}"
-        
-        if theme_icon_name in pcoll:
-            return pcoll[theme_icon_name].icon_id
-            
+    """Helper function to get icon ID"""
+    if "main" in preview_collections and icon_name in preview_collections["main"]:
+        return preview_collections["main"][icon_name].icon_id
     return 0

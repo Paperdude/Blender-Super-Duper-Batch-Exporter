@@ -1,22 +1,21 @@
 import bpy
 from pathlib import Path
 from bpy.types import PropertyGroup
-from bpy.props import (BoolProperty, IntProperty, EnumProperty, StringProperty,
-                       FloatVectorProperty, FloatProperty, CollectionProperty,
-                       PointerProperty)
+from bpy.props import (BoolProperty, IntProperty, EnumProperty, StringProperty, 
+                       FloatVectorProperty, FloatProperty)
 from .utils import get_operator_presets, get_preset_index, preset_enum_items_refs
-import os
+import os 
 
 def update_directory_relative(self, context):
     """
-    If a Project Directory is set, try to make the export directory
+    If a Project Directory is set, try to make the export directory 
     relative to it automatically when the user picks a folder.
     """
     # 1. Get the Project Directory from Preferences
-    # We use __package__ directly. It should match the key in addons,
+    # We use __package__ directly. It should match the key in addons, 
     # whether it's a legacy addon or a new blender extension.
     addon_name = __package__
-
+        
     prefs = context.preferences.addons[addon_name].preferences
     if not prefs or not getattr(prefs, 'project_dir', ''):
         return
@@ -28,14 +27,14 @@ def update_directory_relative(self, context):
 
     # 3. Check if the current path is inside the project root
     try:
-        # Attempt to find the relative path.
+        # Attempt to find the relative path. 
         # If current_path is NOT inside project_root, this raises ValueError.
         relative_path = current_path.relative_to(project_root)
-
+        
         # 4. Update the property if it actually changed to avoid infinite recursion
         # relative_to returns '.' if paths are identical; we prefer empty string for the UI
         new_path_str = str(relative_path)
-        if new_path_str == '.':
+        if new_path_str == '.': 
              new_path_str = ""
 
         if self.directory != new_path_str:
@@ -45,13 +44,6 @@ def update_directory_relative(self, context):
         # The selected path was NOT inside the project directory.
         # Leave it alone (it will remain absolute or relative to .blend).
         pass
-
-class ExportObjectItem(PropertyGroup):
-    object: PointerProperty(
-        name="Object",
-        type=bpy.types.Object,
-    )
-
 
 # Groups together all the addon settings that are saved in each .blend file
 class BatchExportSettings(PropertyGroup):
@@ -73,7 +65,7 @@ class BatchExportSettings(PropertyGroup):
         description="Directory where export files will be copied to",
         default="//",
         subtype='DIR_PATH',
-        #options={'PATH_SUPPORTS_BLEND_RELATIVE'},
+        options={'PATH_SUPPORTS_BLEND_RELATIVE'},
     )
     prefix: StringProperty(
         name="Prefix",
@@ -124,12 +116,9 @@ class BatchExportSettings(PropertyGroup):
         items=[
             ("VISIBLE", "Visible", "", 1),
             ("SELECTED", "Selected", "", 2),
-            ("RENDERABLE", "Render Enabled", "", 3),
-            ("LIST", "List", "Export only objects added to the custom list", 4),
+            ("RENDERABLE", "Render Enabled", "", 3)
         ],
     )
-    export_list: CollectionProperty(type=ExportObjectItem)
-    export_list_index: IntProperty(name="Active Object Index", default=0)
     prefix_collection: BoolProperty(
         name="Prefix Collection Name",
         description="Adds the containing collection's name to the exported file's name, after the 'prefix'"
@@ -152,22 +141,6 @@ class BatchExportSettings(PropertyGroup):
         ],
         default=".usdc",
     )
-    usd_export_animation: BoolProperty(
-        name="Export Animation",
-        description="Export the scene's frame range as USD animation",
-        default=False,
-    )
-    gltf_format: EnumProperty(
-        name="Format",
-        description="Which glTF file variant to export",
-        items=[
-            ('GLB', "Binary (.glb)",
-             "Single, self-contained binary file", 1),
-            ('GLTF_SEPARATE', "Separate (.gltf + .bin + textures)",
-             "Exports the scene, geometry and textures as separate files", 2),
-        ],
-        default='GLB',
-    )
     ply_ascii: BoolProperty(name="ASCII Format", default=False)
     stl_ascii: BoolProperty(name="ASCII Format", default=False)
 
@@ -181,6 +154,16 @@ class BatchExportSettings(PropertyGroup):
             'wm.alembic_export', self.abc_preset),
         set=lambda self, value: setattr(
             self, 'abc_preset', preset_enum_items_refs['wm.alembic_export'][value][0]),
+    )
+    dae_preset: StringProperty(default='NO_PRESET')
+    dae_preset_enum: EnumProperty(
+        name="Preset", options={'SKIP_SAVE'},
+        description="Use export settings from a preset.\n(Create in the export settings from the File > Export > Collada (.dae))",
+        items=lambda self, context: get_operator_presets('wm.collada_export'),
+        get=lambda self: get_preset_index(
+            'wm.collada_export', self.dae_preset),
+        set=lambda self, value: setattr(
+            self, 'dae_preset', preset_enum_items_refs['wm.collada_export'][value][0]),
     )
     usd_preset: StringProperty(default='NO_PRESET')
     usd_preset_enum: EnumProperty(
@@ -227,11 +210,13 @@ class BatchExportSettings(PropertyGroup):
     )
     frame_start: IntProperty(
         name="Frame Start",
+        min=0,
         description="First frame to export",
         default = 1,
     )
     frame_end: IntProperty(
         name="Frame End",
+        min=0,
         description="Last frame to export",
         default = 1,
     )
@@ -264,27 +249,40 @@ class BatchExportSettings(PropertyGroup):
     set_scale: BoolProperty(name="Set Scale", default=False)
     scale: FloatVectorProperty(
         name="Scale", default=(1.0, 1.0, 1.0), subtype="XYZ")
-    apply_location: BoolProperty(
-        name="Apply Location", default=False,
-        description="Bake the object's location into the mesh data before export",
-    )
-    apply_rotation: BoolProperty(
-        name="Apply Rotation", default=False,
-        description="Bake the object's rotation into the mesh data before export",
-    )
-    apply_scale: BoolProperty(
-        name="Apply Scale", default=False,
-        description="Bake the object's scale into the mesh data before export",
-    )
-    corrective_flip_normals: BoolProperty(
-        name="Corrective Flip Normals", default=True,
-        description="When applying a negative scale, flip mesh normals so faces stay outward-facing",
-    )
-
+    
     # LOD Creation:
     create_lod: BoolProperty(
         name="Create LOD", default=False,
         description="Export Levels of Details for game engines",
+    )
+    lod_modifier_order: EnumProperty(
+        name="LOD Generation Order",
+        description="Choose where the LOD Decimate step runs in relation to the object's existing modifiers",
+        items=[
+            (
+                'AFTER_MODIFIERS',
+                "After Modifiers",
+                "Evaluate the object's existing modifiers first, then generate the lower-resolution LOD",
+                1,
+            ),
+            (
+                'BEFORE_MODIFIERS',
+                "Before Modifiers",
+                "Generate the lower-resolution LOD first, then evaluate the object's existing modifiers",
+                2,
+            ),
+        ],
+        default='AFTER_MODIFIERS',
+    )
+    export_default_with_lods: BoolProperty(
+        name="Also Export Default",
+        description="Export the regular mesh as a separate FBX in addition to the LOD FBX",
+        default=True,
+    )
+    lod_file_suffix: StringProperty(
+        name="LOD File Suffix",
+        description="Suffix added to the separate FBX file containing LOD0 and generated LOD meshes",
+        default="_LOD",
     )
     lod_count: IntProperty(
         name="Number of LODs",
@@ -292,27 +290,46 @@ class BatchExportSettings(PropertyGroup):
         default=4, min=1, max=4,
     )
     lod1_ratio: FloatProperty(
-        name="LOD 1 Ratio",
+        name="LOD 1 Ratio", 
         description="Decimate factor for LOD 1",
         default=0.80, min=0.0, max=1.0, subtype="FACTOR"
     )
     lod2_ratio: FloatProperty(
-        name="LOD 2 Ratio",
+        name="LOD 2 Ratio", 
         description="Decimate factor for LOD 2",
         default=0.50, min=0.0, max=1.0, subtype="FACTOR"
     )
     lod3_ratio: FloatProperty(
-        name="LOD 3 Ratio",
+        name="LOD 3 Ratio", 
         description="Decimate factor for LOD 3",
         default=0.20, min=0.0, max=1.0, subtype="FACTOR"
     )
     lod4_ratio: FloatProperty(
-        name="LOD 4 Ratio",
+        name="LOD 4 Ratio", 
         description="Decimate factor for LOD 4",
         default=0.10, min=0.0, max=1.0, subtype="FACTOR"
     )
 
+    # Unity collider export:
+    create_collider: BoolProperty(
+        name="Create Collider",
+        description="Export a simplified collision mesh to a separate FBX file",
+        default=False,
+    )
+    collider_ratio: FloatProperty(
+        name="Collider Ratio",
+        description="Triangle ratio retained in the generated collision mesh",
+        default=0.10,
+        min=0.01,
+        max=1.0,
+        subtype="FACTOR",
+    )
+    collider_suffix: StringProperty(
+        name="Collider Suffix",
+        description="Suffix added to the separate collider FBX file and its mesh objects",
+        default="_Collider",
+    )
+
 registry = [
-    ExportObjectItem,
     BatchExportSettings,
 ]

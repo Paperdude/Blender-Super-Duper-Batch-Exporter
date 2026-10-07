@@ -1,38 +1,5 @@
 import bpy
 import os
-from pathlib import Path
-
-
-def resolve_base_dir(settings, prefs):
-    """
-    Calculates the absolute base directory for exports.
-    If a project_dir preference is set, it acts as the root and
-    settings.directory is treated as relative to it.
-    Raises ValueError if the path cannot be resolved (e.g. unsaved .blend
-    with a relative output directory and no project dir set).
-    """
-    project_dir_raw = getattr(prefs, 'project_dir', '')
-
-    if project_dir_raw:
-        # Project Directory overrides the .blend file as the relative root.
-        project_root = Path(bpy.path.abspath(project_dir_raw))
-
-        relative_part = settings.directory
-        # Strip Blender's '//' relative prefix so pathlib joins correctly.
-        if relative_part.startswith('//'):
-            relative_part = relative_part[2:]
-        elif relative_part.startswith('\\'):
-            relative_part = relative_part[1:]
-
-        return (project_root / relative_part).resolve()
-
-    # Standard Blender behaviour: relative to the .blend file.
-    if settings.directory.startswith('//') and not bpy.data.is_saved:
-        raise ValueError(
-            "Save the .blend file before exporting to a relative directory,\n"
-            "or set a Project Directory in Preferences."
-        )
-    return Path(bpy.path.abspath(settings.directory)).resolve()
 
 # A Dictionary of operator_name: [list of preset EnumProperty item tuples].
 # Blender's doc warns that not keeping reference to enum props array can
